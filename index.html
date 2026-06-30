@@ -66,10 +66,113 @@ function kwacha(n) {
   return 'ZMW ' + Number(n).toLocaleString('en-US');
 }
 
+const VALID_RISK = RISK_ORDER.map(r => r.toLowerCase());
+const VALID_STATUS = Object.keys(STATUS_COLOR).map(s => s.toLowerCase());
+
+function titleCase(list, value) {
+  const match = list.find(item => item.toLowerCase() === String(value).trim().toLowerCase());
+  return match || null;
+}
+
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+  if (lines.length < 2) return { rows: [], errors: ['File appears empty or has no data rows.'] };
+
+  const header = lines[0].split(',').map(h => h.trim().toLowerCase());
+  const required = ['id', 'sector', 'province', 'amount', 'risk', 'status'];
+  const missing = required.filter(r => !header.includes(r));
+  if (missing.length > 0) {
+    return { rows: [], errors: [`Missing required column(s): ${missing.join(', ')}. Expected header: id,sector,province,amount,risk,status`] };
+  }
+
+  const idx = {};
+  required.forEach(r => { idx[r] = header.indexOf(r); });
+
+  const rows = [];
+  const errors = [];
+
+  lines.slice(1).forEach((line, i) => {
+    const cells = line.split(',').map(c => c.trim());
+    const rowNum = i + 2;
+
+    const id = cells[idx.id];
+    const sector = cells[idx.sector];
+    const province = cells[idx.province];
+    const amountRaw = cells[idx.amount];
+    const riskRaw = cells[idx.risk];
+    const statusRaw = cells[idx.status];
+
+    if (!id) { errors.push(`Row ${rowNum}: missing loan ID.`); return; }
+
+    const amount = Number(amountRaw);
+    if (!amountRaw || isNaN(amount) || amount < 0) {
+      errors.push(`Row ${rowNum} (${id}): amount "${amountRaw}" is not a valid number.`);
+      return;
+    }
+
+    const risk = titleCase(RISK_ORDER, riskRaw);
+    if (!risk) {
+      errors.push(`Row ${rowNum} (${id}): risk "${riskRaw}" must be one of Low, Moderate, High.`);
+      return;
+    }
+
+    const status = titleCase(Object.keys(STATUS_COLOR), statusRaw);
+    if (!status) {
+      errors.push(`Row ${rowNum} (${id}): status "${statusRaw}" must be one of Performing, Watchlist, Non-performing.`);
+      return;
+    }
+
+    rows.push({ id, sector: sector || '—', province: province || '—', amount, risk, status });
+  });
+
+  return { rows, errors };
+}
+
+const CSV_TEMPLATE = 'id,sector,province,amount,risk,status\n1001,Agriculture,Lusaka,250000,Low,Performing\n1002,Mining,Copperbelt,1200000,Moderate,Watchlist\n1003,Tourism,Southern,180000,High,Non-performing\n';
+
+function downloadTemplate() {
+  const blob = new Blob([CSV_TEMPLATE], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'loan-book-template.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function CreditRiskLedger() {
   const [loans, setLoans] = useState(SAMPLE);
   const [draft, setDraft] = useState({ id: '', sector: '', province: '', amount: '', risk: 'Low', status: 'Performing' });
   const [showForm, setShowForm] = useState(false);
+  const [uploadErrors, setUploadErrors] = useState([]);
+  const [uploadMsg, setUploadMsg] = useState('');
+  const fileInputRef = React.useRef(null);
+
+  function handleFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      const { rows, errors } = parseCSV(evt.target.result);
+      setUploadErrors(errors);
+      if (rows.length > 0) {
+        setLoans(rows);
+        setUploadMsg(`Loaded ${rows.length} loan${rows.length === 1 ? '' : 's'} from "${file.name}".` + (errors.length ? ` ${errors.length} row(s) skipped.` : ''));
+      } else {
+        setUploadMsg('');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  }
+
+  function resetToSample() {
+    setLoans(SAMPLE);
+    setUploadErrors([]);
+    setUploadMsg('Reset to sample BoZ dataset.');
+  }
 
   const stats = useMemo(() => {
     const total = loans.reduce((s, l) => s + l.amount, 0);
@@ -119,6 +222,40 @@ function CreditRiskLedger() {
           Enter a loan book below. The ledger computes exposure, default concentration, and tests
           whether your Watchlist is actually intercepting risk before it fails — live, as you edit.
         </p>
+
+        <div style={{ display: 'flex', gap: '0.7rem', marginTop: '1.8rem', flexWrap: 'wrap', alignItems: 'center' }}>
+          <button
+            onClick={() => fileInputRef.current && fileInputRef.current.click()}
+            style={{ background: '#C9952A', border: 'none', color: '#0B0D10', padding: '0.6rem 1.1rem', fontSize: '0.78rem', fontWeight: 600, letterSpacing: '0.03em' }}
+          >
+            ↑ Upload CSV loan book
+          </button>
+          <input ref={fileInputRef} type="file" accept=".csv,text/csv" onChange={handleFile} style={{ display: 'none' }} />
+          <button onClick={downloadTemplate} style={{ background: 'transparent', border: '1px solid #2a2e36', color: '#9a9690', padding: '0.6rem 1.1rem', fontSize: '0.78rem' }}>
+            Download CSV template
+          </button>
+          <button onClick={resetToSample} style={{ background: 'transparent', border: 'none', color: '#6b6862', padding: '0.6rem 0.5rem', fontSize: '0.78rem', textDecoration: 'underline' }}>
+            Reset to sample data
+          </button>
+        </div>
+
+        {uploadMsg && (
+          <div className="mono" style={{ marginTop: '0.9rem', fontSize: '0.78rem', color: '#2F4F3F', background: 'rgba(47,79,63,0.15)', border: '1px solid #2F4F3F', padding: '0.6rem 0.9rem', maxWidth: 600 }}>
+            ✓ {uploadMsg}
+          </div>
+        )}
+
+        {uploadErrors.length > 0 && (
+          <div style={{ marginTop: '0.9rem', fontSize: '0.78rem', color: '#C9952A', background: 'rgba(201,149,42,0.08)', border: '1px solid #7A1F2B', padding: '0.8rem 1rem', maxWidth: 600 }}>
+            <strong style={{ display: 'block', marginBottom: '0.4rem', color: '#F5F1E8' }}>
+              {uploadErrors.length} row{uploadErrors.length === 1 ? '' : 's'} could not be loaded:
+            </strong>
+            <ul style={{ margin: 0, paddingLeft: '1.1rem', lineHeight: 1.6 }}>
+              {uploadErrors.slice(0, 6).map((err, i) => <li key={i} className="mono" style={{ fontSize: '0.74rem' }}>{err}</li>)}
+              {uploadErrors.length > 6 && <li className="mono" style={{ fontSize: '0.74rem' }}>…and {uploadErrors.length - 6} more.</li>}
+            </ul>
+          </div>
+        )}
       </header>
 
       <main style={{ maxWidth: 880, margin: '0 auto', padding: '0 2rem' }}>
