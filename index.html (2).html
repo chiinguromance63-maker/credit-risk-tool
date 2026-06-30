@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Loan Portfolio Risk Ledger — Clearview Business Solutions</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0B0D10; font-family: 'IBM Plex Sans', sans-serif; }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+  .serif { font-family: 'IBM Plex Serif', serif; }
+  ::selection { background: #C9952A; color: #0B0D10; }
+  input, select {
+    font-family: 'IBM Plex Mono', monospace;
+    background: #14171c;
+    border: 1px solid #2a2e36;
+    color: #F5F1E8;
+    padding: 0.55rem 0.7rem;
+    font-size: 0.85rem;
+    width: 100%;
+  }
+  input:focus, select:focus {
+    outline: 2px solid #C9952A;
+    outline-offset: 1px;
+    border-color: #C9952A;
+  }
+  button { cursor: pointer; font-family: 'IBM Plex Sans', sans-serif; }
+  button:focus-visible { outline: 2px solid #C9952A; outline-offset: 2px; }
+  .rowhover:hover { background: rgba(201,149,42,0.06); }
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useMemo } = React;
+
+const SAMPLE = [
+  { id: '1001', sector: 'Agriculture', province: 'Lusaka', amount: 250000, risk: 'Low', status: 'Performing' },
+  { id: '1002', sector: 'Mining', province: 'Copperbelt', amount: 1200000, risk: 'Moderate', status: 'Watchlist' },
+  { id: '1003', sector: 'Manufacturing', province: 'Lusaka', amount: 650000, risk: 'Moderate', status: 'Performing' },
+  { id: '1004', sector: 'Tourism', province: 'Southern', amount: 180000, risk: 'High', status: 'Non-performing' },
+  { id: '1005', sector: 'SME', province: 'Eastern', amount: 95000, risk: 'High', status: 'Performing' },
+  { id: '1006', sector: 'Agriculture', province: 'Central', amount: 400000, risk: 'Low', status: 'Watchlist' },
+  { id: '1007', sector: 'Energy', province: 'North-Western', amount: 2200000, risk: 'Low', status: 'Performing' },
+  { id: '1008', sector: 'Retail', province: 'Lusaka', amount: 140000, risk: 'High', status: 'Non-performing' },
+  { id: '1009', sector: 'Manufacturing', province: 'Copperbelt', amount: 890000, risk: 'Low', status: 'Watchlist' },
+  { id: '1010', sector: 'Construction', province: 'Western', amount: 510000, risk: 'Moderate', status: 'Performing' },
+];
+
+const RISK_ORDER = ['Low', 'Moderate', 'High'];
+const STATUS_COLOR = {
+  'Performing': '#2F4F3F',
+  'Watchlist': '#C9952A',
+  'Non-performing': '#7A1F2B',
+};
+
+function kwacha(n) {
+  return 'ZMW ' + Number(n).toLocaleString('en-US');
+}
+
+function CreditRiskLedger() {
+  const [loans, setLoans] = useState(SAMPLE);
+  const [draft, setDraft] = useState({ id: '', sector: '', province: '', amount: '', risk: 'Low', status: 'Performing' });
+  const [showForm, setShowForm] = useState(false);
+
+  const stats = useMemo(() => {
+    const total = loans.reduce((s, l) => s + l.amount, 0);
+    const nonPerforming = loans.filter(l => l.status === 'Non-performing');
+    const nonPerformingAmt = nonPerforming.reduce((s, l) => s + l.amount, 0);
+
+    const byRisk = RISK_ORDER.map(risk => {
+      const tier = loans.filter(l => l.risk === risk);
+      const watchlist = tier.filter(l => l.status === 'Watchlist').length;
+      const nonPerf = tier.filter(l => l.status === 'Non-performing').length;
+      const perf = tier.filter(l => l.status === 'Performing').length;
+      const nonPerfAmt = tier.filter(l => l.status === 'Non-performing').reduce((s, l) => s + l.amount, 0);
+      return {
+        risk, count: tier.length, watchlist, nonPerf, perf, nonPerfAmt,
+        defaultRate: tier.length ? (nonPerf / tier.length) * 100 : 0,
+      };
+    });
+
+    const brokenRung = [...byRisk].reverse().find(r => r.nonPerf > 0 && r.watchlist === 0);
+    const portfolioNpl = total ? (nonPerformingAmt / total) * 100 : 0;
+
+    return { total, nonPerformingAmt, byRisk, brokenRung, portfolioNpl, count: loans.length };
+  }, [loans]);
+
+  function addLoan() {
+    if (!draft.id || !draft.amount) return;
+    setLoans([...loans, { ...draft, amount: Number(draft.amount) }]);
+    setDraft({ id: '', sector: '', province: '', amount: '', risk: 'Low', status: 'Performing' });
+    setShowForm(false);
+  }
+
+  function removeLoan(id) {
+    setLoans(loans.filter(l => l.id !== id));
+  }
+
+  return (
+    <div style={{ minHeight: '100vh', background: '#0B0D10', color: '#F5F1E8', padding: '0 0 6rem' }}>
+
+      <header style={{ borderBottom: '1px solid #23262d', padding: '3.5rem 2rem 2.5rem', maxWidth: 880, margin: '0 auto' }}>
+        <div className="mono" style={{ fontSize: '0.7rem', letterSpacing: '0.25em', color: '#C9952A', marginBottom: '1rem', textTransform: 'uppercase' }}>
+          Clearview Business Solutions &nbsp;·&nbsp; Credit Exhibit No. 01
+        </div>
+        <h1 className="serif" style={{ fontSize: 'clamp(1.8rem, 4.5vw, 2.8rem)', fontWeight: 500, lineHeight: 1.15, color: '#F5F1E8' }}>
+          Loan Portfolio<br /><span style={{ color: '#C9952A', fontStyle: 'italic' }}>Risk Ledger</span>
+        </h1>
+        <p style={{ color: '#9a9690', fontSize: '0.95rem', marginTop: '1rem', maxWidth: 520, lineHeight: 1.6 }}>
+          Enter a loan book below. The ledger computes exposure, default concentration, and tests
+          whether your Watchlist is actually intercepting risk before it fails — live, as you edit.
+        </p>
+      </header>
+
+      <main style={{ maxWidth: 880, margin: '0 auto', padding: '0 2rem' }}>
+
+        <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1px', background: '#23262d', border: '1px solid #23262d', marginTop: '2.5rem' }}>
+          {[
+            { label: 'Portfolio', value: kwacha(stats.total), sub: `${stats.count} facilities` },
+            { label: 'Non-performing', value: kwacha(stats.nonPerformingAmt), sub: `${stats.portfolioNpl.toFixed(1)}% of book`, accent: '#7A1F2B' },
+            { label: 'Riskiest tier', value: stats.brokenRung ? stats.brokenRung.risk : '—', sub: stats.brokenRung ? `${stats.brokenRung.defaultRate.toFixed(0)}% default rate` : 'no gap found', accent: '#C9952A' },
+          ].map((kpi, i) => (
+            <div key={i} style={{ background: '#0F1115', padding: '1.4rem 1.5rem' }}>
+              <div className="mono" style={{ fontSize: '0.65rem', letterSpacing: '0.15em', color: '#6b6862', textTransform: 'uppercase', marginBottom: '0.6rem' }}>{kpi.label}</div>
+              <div className="mono" style={{ fontSize: '1.5rem', fontWeight: 500, color: kpi.accent || '#F5F1E8' }}>{kpi.value}</div>
+              <div style={{ fontSize: '0.78rem', color: '#6b6862', marginTop: '0.3rem' }}>{kpi.sub}</div>
+            </div>
+          ))}
+        </section>
+
+        <section style={{ marginTop: '3.5rem' }}>
+          <div className="mono" style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#C9952A', textTransform: 'uppercase', marginBottom: '0.4rem' }}>Exhibit A</div>
+          <h2 className="serif" style={{ fontSize: '1.4rem', fontWeight: 500, margin: '0 0 0.5rem' }}>The Interception Ladder</h2>
+          <p style={{ color: '#9a9690', fontSize: '0.88rem', maxWidth: 540, lineHeight: 1.6, marginBottom: '2rem' }}>
+            Each rung is a risk tier. A loan should climb from Performing → Watchlist before it can fall to
+            Non-performing. Where a rung is <span style={{ color: '#C9952A' }}>broken</span>, defaults are happening with no warning stage in between.
+          </p>
+
+          <div style={{ display: 'flex', flexDirection: 'column-reverse', gap: '0.5rem' }}>
+            {stats.byRisk.map((tier) => {
+              const isBroken = tier.nonPerf > 0 && tier.watchlist === 0;
+              return (
+                <div key={tier.risk} style={{
+                  border: `1px solid ${isBroken ? '#7A1F2B' : '#23262d'}`,
+                  background: isBroken ? 'rgba(122,31,43,0.08)' : '#0F1115',
+                  padding: '1.1rem 1.4rem', display: 'flex', alignItems: 'center', gap: '1.2rem', flexWrap: 'wrap',
+                }}>
+                  <div style={{ minWidth: 90 }}>
+                    <div className="serif" style={{ fontSize: '1.05rem', fontWeight: 600 }}>{tier.risk}</div>
+                    <div className="mono" style={{ fontSize: '0.7rem', color: '#6b6862' }}>{tier.count} loans</div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 180, display: 'flex', height: 22, border: '1px solid #2a2e36' }}>
+                    {tier.count === 0 ? (
+                      <div style={{ flex: 1, background: '#1a1d22' }} />
+                    ) : (
+                      <React.Fragment>
+                        <div style={{ flex: tier.perf, background: STATUS_COLOR['Performing'] }} title="Performing" />
+                        <div style={{ flex: tier.watchlist || 0.001, background: tier.watchlist ? STATUS_COLOR['Watchlist'] : 'transparent' }} title="Watchlist" />
+                        <div style={{ flex: tier.nonPerf, background: STATUS_COLOR['Non-performing'] }} title="Non-performing" />
+                      </React.Fragment>
+                    )}
+                  </div>
+                  <div style={{ minWidth: 140, textAlign: 'right' }}>
+                    {isBroken ? (
+                      <span className="mono" style={{ fontSize: '0.72rem', color: '#C9952A' }}>⚠ 0 intercepted, {tier.nonPerf} defaulted</span>
+                    ) : (
+                      <span className="mono" style={{ fontSize: '0.72rem', color: '#6b6862' }}>{tier.watchlist} intercepted / {tier.nonPerf} defaulted</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {stats.brokenRung && (
+            <div style={{ marginTop: '1.2rem', borderLeft: '3px solid #C9952A', paddingLeft: '1rem', fontSize: '0.85rem', color: '#cfc9bd', lineHeight: 1.6 }}>
+              <strong style={{ color: '#F5F1E8' }}>Finding:</strong> {stats.brokenRung.nonPerf} of {stats.brokenRung.count} {stats.brokenRung.risk}-risk
+              facilities ({stats.brokenRung.defaultRate.toFixed(0)}%) defaulted with zero Watchlist interception —
+              exposure of {kwacha(stats.brokenRung.nonPerfAmt)}. The early-warning stage is being skipped entirely for this tier.
+            </div>
+          )}
+        </section>
+
+        <section style={{ marginTop: '3.5rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.6rem' }}>
+            <div>
+              <div className="mono" style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#C9952A', textTransform: 'uppercase', marginBottom: '0.4rem' }}>Exhibit B</div>
+              <h2 className="serif" style={{ fontSize: '1.4rem', fontWeight: 500 }}>Loan Book</h2>
+            </div>
+            <button onClick={() => setShowForm(!showForm)} style={{ background: 'transparent', border: '1px solid #C9952A', color: '#C9952A', padding: '0.5rem 1rem', fontSize: '0.78rem', letterSpacing: '0.05em' }}>
+              {showForm ? 'Cancel' : '+ Add facility'}
+            </button>
+          </div>
+
+          {showForm && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '0.6rem', background: '#0F1115', border: '1px solid #23262d', padding: '1.2rem', marginBottom: '1.2rem' }}>
+              <input placeholder="Loan ID" value={draft.id} onChange={e => setDraft({ ...draft, id: e.target.value })} />
+              <input placeholder="Sector" value={draft.sector} onChange={e => setDraft({ ...draft, sector: e.target.value })} />
+              <input placeholder="Province" value={draft.province} onChange={e => setDraft({ ...draft, province: e.target.value })} />
+              <input placeholder="Amount (ZMW)" type="number" value={draft.amount} onChange={e => setDraft({ ...draft, amount: e.target.value })} />
+              <select value={draft.risk} onChange={e => setDraft({ ...draft, risk: e.target.value })}>
+                {RISK_ORDER.map(r => <option key={r} value={r}>{r} risk</option>)}
+              </select>
+              <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })}>
+                {Object.keys(STATUS_COLOR).map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <button onClick={addLoan} style={{ gridColumn: '1 / -1', background: '#C9952A', border: 'none', color: '#0B0D10', padding: '0.6rem', fontWeight: 600, fontSize: '0.82rem', letterSpacing: '0.03em' }}>
+                Add to ledger
+              </button>
+            </div>
+          )}
+
+          <div style={{ overflowX: 'auto', border: '1px solid #23262d' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+              <thead>
+                <tr className="mono" style={{ background: '#14171c', color: '#9a9690', textTransform: 'uppercase', fontSize: '0.68rem', letterSpacing: '0.08em' }}>
+                  <th style={{ textAlign: 'left', padding: '0.7rem 1rem' }}>ID</th>
+                  <th style={{ textAlign: 'left', padding: '0.7rem 1rem' }}>Sector</th>
+                  <th style={{ textAlign: 'left', padding: '0.7rem 1rem' }}>Province</th>
+                  <th style={{ textAlign: 'right', padding: '0.7rem 1rem' }}>Amount</th>
+                  <th style={{ textAlign: 'left', padding: '0.7rem 1rem' }}>Risk</th>
+                  <th style={{ textAlign: 'left', padding: '0.7rem 1rem' }}>Status</th>
+                  <th style={{ padding: '0.7rem 1rem' }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {loans.map(l => (
+                  <tr key={l.id} className="rowhover" style={{ borderTop: '1px solid #1c1f25' }}>
+                    <td className="mono" style={{ padding: '0.65rem 1rem', color: '#cfc9bd' }}>{l.id}</td>
+                    <td style={{ padding: '0.65rem 1rem' }}>{l.sector}</td>
+                    <td style={{ padding: '0.65rem 1rem', color: '#9a9690' }}>{l.province}</td>
+                    <td className="mono" style={{ padding: '0.65rem 1rem', textAlign: 'right' }}>{kwacha(l.amount)}</td>
+                    <td style={{ padding: '0.65rem 1rem' }}>{l.risk}</td>
+                    <td style={{ padding: '0.65rem 1rem' }}>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.76rem', color: STATUS_COLOR[l.status] }}>
+                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: STATUS_COLOR[l.status] }} />
+                        {l.status}
+                      </span>
+                    </td>
+                    <td style={{ padding: '0.65rem 1rem', textAlign: 'right' }}>
+                      <button onClick={() => removeLoan(l.id)} style={{ background: 'none', border: 'none', color: '#6b6862', fontSize: '0.75rem' }}>remove</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section style={{ marginTop: '3.5rem', padding: '2rem', background: '#0F1115', border: '1px solid #23262d', borderTop: '3px solid #C9952A' }}>
+          <div className="mono" style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#C9952A', textTransform: 'uppercase', marginBottom: '0.8rem' }}>Recommendation</div>
+          <p className="serif" style={{ fontSize: '1.05rem', lineHeight: 1.7, color: '#F5F1E8', fontStyle: 'italic' }}>
+            {stats.brokenRung
+              ? `Introduce a mandatory Watchlist review for any facility newly classified ${stats.brokenRung.risk}-risk, before it is permitted to lapse into Non-performing status. This single checkpoint targets the ${kwacha(stats.brokenRung.nonPerfAmt)} currently defaulting with no intermediate warning.`
+              : 'No interception gap detected in this portfolio — Watchlist appears to be functioning as an effective early-warning stage across all risk tiers.'}
+          </p>
+        </section>
+
+        <footer style={{ marginTop: '3rem', textAlign: 'center', color: '#4a4742', fontSize: '0.72rem' }} className="mono">
+          Prepared with Clearview Business Solutions &nbsp;·&nbsp; Romance Chiingu
+        </footer>
+      </main>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<CreditRiskLedger />);
+</script>
+</body>
+</html>
