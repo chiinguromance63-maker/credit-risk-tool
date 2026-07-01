@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Loan Portfolio Risk Ledger — Clearview Business Solutions</title>
+<title>Portfolio Risk Surveillance — Clearview Business Solutions</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -28,9 +28,12 @@
     outline-offset: 1px;
     border-color: #C9952A;
   }
-  button { cursor: pointer; font-family: 'IBM Plex Sans', sans-serif; }
+  button { cursor: pointer; font-family: 'IBM Plex Sans', sans-serif; transition: opacity 0.15s ease; }
+  button:hover { opacity: 0.85; }
   button:focus-visible { outline: 2px solid #C9952A; outline-offset: 2px; }
   .rowhover:hover { background: rgba(201,149,42,0.06); }
+  .dropzone { transition: border-color 0.15s ease, background 0.15s ease; }
+  .dropzone.drag { border-color: #C9952A !important; background: rgba(201,149,42,0.06) !important; }
   @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; animation: none !important; }
   }
@@ -40,9 +43,17 @@
 <div id="root"></div>
 
 <script type="text/babel">
-const { useState, useMemo } = React;
+const { useState, useMemo, useRef } = React;
 
-const SAMPLE = [
+const RISK_ORDER = ['Low', 'Moderate', 'High'];
+const STATUS_LIST = ['Performing', 'Watchlist', 'Non-performing'];
+const STATUS_COLOR = {
+  'Performing': '#2F4F3F',
+  'Watchlist': '#C9952A',
+  'Non-performing': '#7A1F2B',
+};
+
+const DEMO_DATA = [
   { id: '1001', sector: 'Agriculture', province: 'Lusaka', amount: 250000, risk: 'Low', status: 'Performing' },
   { id: '1002', sector: 'Mining', province: 'Copperbelt', amount: 1200000, risk: 'Moderate', status: 'Watchlist' },
   { id: '1003', sector: 'Manufacturing', province: 'Lusaka', amount: 650000, risk: 'Moderate', status: 'Performing' },
@@ -55,80 +66,137 @@ const SAMPLE = [
   { id: '1010', sector: 'Construction', province: 'Western', amount: 510000, risk: 'Moderate', status: 'Performing' },
 ];
 
-const RISK_ORDER = ['Low', 'Moderate', 'High'];
-const STATUS_COLOR = {
-  'Performing': '#2F4F3F',
-  'Watchlist': '#C9952A',
-  'Non-performing': '#7A1F2B',
-};
-
 function kwacha(n) {
   return 'ZMW ' + Number(n).toLocaleString('en-US');
 }
 
-const VALID_RISK = RISK_ORDER.map(r => r.toLowerCase());
-const VALID_STATUS = Object.keys(STATUS_COLOR).map(s => s.toLowerCase());
+// ---------- Flexible header recognition ----------
+const HEADER_ALIASES = {
+  id:       ['id', 'loanid', 'facilityid', 'accountno', 'ref', 'reference', 'loanno'],
+  sector:   ['sector', 'industry', 'businesssector', 'segment'],
+  province: ['province', 'region', 'branch', 'location', 'area', 'district'],
+  amount:   ['amount', 'loanamount', 'principal', 'value', 'exposure', 'balance', 'outstanding', 'outstandingbalance'],
+  risk:     ['risk', 'risklevel', 'riskrating', 'riskcategory', 'interestrisk', 'rating'],
+  status:   ['status', 'loanstatus', 'classification', 'performancestatus', 'state'],
+};
 
-function titleCase(list, value) {
-  const match = list.find(item => item.toLowerCase() === String(value).trim().toLowerCase());
-  return match || null;
+function normalizeHeader(h) {
+  return String(h).replace(/^\uFEFF/, '').trim().toLowerCase().replace(/[\s\-_]+/g, '');
+}
+
+function matchField(headerCell) {
+  const norm = normalizeHeader(headerCell);
+  for (const field in HEADER_ALIASES) {
+    if (HEADER_ALIASES[field].indexOf(norm) !== -1) return field;
+  }
+  return null;
+}
+
+const RISK_SYNONYMS = {
+  'low': 'Low', 'l': 'Low', 'minimal': 'Low', 'lowrisk': 'Low',
+  'moderate': 'Moderate', 'medium': 'Moderate', 'med': 'Moderate', 'm': 'Moderate', 'mid': 'Moderate',
+  'high': 'High', 'h': 'High', 'severe': 'High', 'critical': 'High', 'highrisk': 'High',
+};
+const STATUS_SYNONYMS = {
+  'performing': 'Performing', 'active': 'Performing', 'good': 'Performing', 'current': 'Performing', 'ok': 'Performing',
+  'watchlist': 'Watchlist', 'watch': 'Watchlist', 'specialmention': 'Watchlist', 'monitor': 'Watchlist', 'monitoring': 'Watchlist',
+  'nonperforming': 'Non-performing', 'npl': 'Non-performing', 'default': 'Non-performing', 'defaulted': 'Non-performing', 'bad': 'Non-performing', 'writtenoff': 'Non-performing',
+};
+
+function normalizeRisk(v) {
+  if (!v) return null;
+  return RISK_SYNONYMS[normalizeHeader(v)] || null;
+}
+function normalizeStatus(v) {
+  if (!v) return null;
+  return STATUS_SYNONYMS[normalizeHeader(v)] || null;
+}
+
+// CSV line splitter that respects quoted commas
+function splitCSVLine(line) {
+  const cells = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      cells.push(cur.trim());
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  cells.push(cur.trim());
+  return cells.map(function(c) { return c.replace(/^"|"$/g, ''); });
 }
 
 function parseCSV(text) {
-  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-  if (lines.length < 2) return { rows: [], errors: ['File appears empty or has no data rows.'] };
+  // Strip BOM if present (common when exporting from Excel)
+  const clean = text.replace(/^\uFEFF/, '');
+  const lines = clean.split(/\r?\n/).map(function(l) { return l.trim(); }).filter(function(l) { return l.length > 0; });
 
-  const header = lines[0].split(',').map(h => h.trim().toLowerCase());
-  const required = ['id', 'sector', 'province', 'amount', 'risk', 'status'];
-  const missing = required.filter(r => !header.includes(r));
-  if (missing.length > 0) {
-    return { rows: [], errors: [`Missing required column(s): ${missing.join(', ')}. Expected header: id,sector,province,amount,risk,status`] };
+  if (lines.length < 2) {
+    return { rows: [], errors: ['File appears empty or has no data rows beyond the header.'], rowErrors: [] };
   }
 
-  const idx = {};
-  required.forEach(r => { idx[r] = header.indexOf(r); });
+  const rawHeader = splitCSVLine(lines[0]);
+  const fieldIndex = {};
 
-  const rows = [];
-  const errors = [];
-
-  lines.slice(1).forEach((line, i) => {
-    const cells = line.split(',').map(c => c.trim());
-    const rowNum = i + 2;
-
-    const id = cells[idx.id];
-    const sector = cells[idx.sector];
-    const province = cells[idx.province];
-    const amountRaw = cells[idx.amount];
-    const riskRaw = cells[idx.risk];
-    const statusRaw = cells[idx.status];
-
-    if (!id) { errors.push(`Row ${rowNum}: missing loan ID.`); return; }
-
-    const amount = Number(amountRaw);
-    if (!amountRaw || isNaN(amount) || amount < 0) {
-      errors.push(`Row ${rowNum} (${id}): amount "${amountRaw}" is not a valid number.`);
-      return;
+  rawHeader.forEach(function(cell, i) {
+    const field = matchField(cell);
+    if (field && fieldIndex[field] === undefined) {
+      fieldIndex[field] = i;
     }
-
-    const risk = titleCase(RISK_ORDER, riskRaw);
-    if (!risk) {
-      errors.push(`Row ${rowNum} (${id}): risk "${riskRaw}" must be one of Low, Moderate, High.`);
-      return;
-    }
-
-    const status = titleCase(Object.keys(STATUS_COLOR), statusRaw);
-    if (!status) {
-      errors.push(`Row ${rowNum} (${id}): status "${statusRaw}" must be one of Performing, Watchlist, Non-performing.`);
-      return;
-    }
-
-    rows.push({ id, sector: sector || '—', province: province || '—', amount, risk, status });
   });
 
-  return { rows, errors };
+  const errors = [];
+  if (fieldIndex.id === undefined) errors.push('Could not find an ID column. Try heading it "id", "loan_id", or "account no".');
+  if (fieldIndex.amount === undefined) errors.push('Could not find an Amount column. Try heading it "amount", "loan_amount", or "balance".');
+  if (errors.length) return { rows: [], errors: errors, rowErrors: [] };
+
+  const rows = [];
+  const rowErrors = [];
+
+  lines.slice(1).forEach(function(line, i) {
+    const cells = splitCSVLine(line);
+    const rowNum = i + 2;
+    function get(field) {
+      return fieldIndex[field] !== undefined ? cells[fieldIndex[field]] : undefined;
+    }
+
+    const id = get('id');
+    if (!id) { rowErrors.push('Row ' + rowNum + ': missing ID, skipped.'); return; }
+
+    const amountCell = get('amount') || '';
+    const amountRaw = amountCell.replace(/[^0-9.\-]/g, '');
+    const amount = Number(amountRaw);
+    if (!amountRaw || isNaN(amount) || amount < 0) {
+      rowErrors.push('Row ' + rowNum + ' (' + id + '): amount "' + amountCell + '" is not a valid number, skipped.');
+      return;
+    }
+
+    let risk = fieldIndex.risk !== undefined ? normalizeRisk(get('risk')) : null;
+    if (!risk) risk = 'Moderate';
+
+    let status = fieldIndex.status !== undefined ? normalizeStatus(get('status')) : null;
+    if (!status) status = 'Performing';
+
+    rows.push({
+      id: id,
+      sector: get('sector') || '—',
+      province: get('province') || '—',
+      amount: amount,
+      risk: risk,
+      status: status,
+    });
+  });
+
+  return { rows: rows, errors: rowErrors, rowErrors: rowErrors };
 }
 
-const CSV_TEMPLATE = 'id,sector,province,amount,risk,status\n1001,Agriculture,Lusaka,250000,Low,Performing\n1002,Mining,Copperbelt,1200000,Moderate,Watchlist\n1003,Tourism,Southern,180000,High,Non-performing\n';
+const CSV_TEMPLATE = 'loan_id,sector,province,amount,risk_rating,status\n1001,Agriculture,Lusaka,250000,Low,Performing\n1002,Mining,Copperbelt,1200000,Moderate,Watchlist\n1003,Tourism,Southern,180000,High,Non-performing\n';
 
 function downloadTemplate() {
   const blob = new Blob([CSV_TEMPLATE], { type: 'text/csv' });
@@ -142,152 +210,253 @@ function downloadTemplate() {
   URL.revokeObjectURL(url);
 }
 
+function StatCard(props) {
+  return (
+    <div style={{ background: '#0F1115', padding: '1.4rem 1.5rem' }}>
+      <div className="mono" style={{ fontSize: '0.65rem', letterSpacing: '0.15em', color: '#6b6862', textTransform: 'uppercase', marginBottom: '0.6rem' }}>{props.label}</div>
+      <div className="mono" style={{ fontSize: '1.5rem', fontWeight: 500, color: props.accent || '#F5F1E8' }}>{props.value}</div>
+      <div style={{ fontSize: '0.78rem', color: '#6b6862', marginTop: '0.3rem' }}>{props.sub}</div>
+    </div>
+  );
+}
+
+function EmptyState(props) {
+  return (
+    <div
+      className={'dropzone' + (props.dragActive ? ' drag' : '')}
+      style={{
+        border: '1px dashed #2a2e36', padding: '3.5rem 2rem', textAlign: 'center',
+        marginTop: '2.5rem', background: '#0F1115',
+      }}
+    >
+      <div className="mono" style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#6b6862', textTransform: 'uppercase', marginBottom: '1rem' }}>
+        No portfolio loaded
+      </div>
+      <p className="serif" style={{ fontSize: '1.15rem', color: '#cfc9bd', marginBottom: '1.8rem', fontStyle: 'italic' }}>
+        Upload a loan book to begin surveillance.
+      </p>
+      <div style={{ display: 'flex', gap: '0.7rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+        <button onClick={props.onUploadClick} style={{ background: '#C9952A', border: 'none', color: '#0B0D10', padding: '0.7rem 1.3rem', fontSize: '0.8rem', fontWeight: 600, letterSpacing: '0.03em' }}>
+          ↑ Upload CSV
+        </button>
+        <button onClick={props.onDemoClick} style={{ background: 'transparent', border: '1px solid #2a2e36', color: '#9a9690', padding: '0.7rem 1.3rem', fontSize: '0.8rem' }}>
+          ▷ See demo with sample data
+        </button>
+      </div>
+      <p className="mono" style={{ fontSize: '0.72rem', color: '#4a4742', marginTop: '1.6rem' }}>
+        or drag a .csv file anywhere on this page
+      </p>
+    </div>
+  );
+}
+
 function CreditRiskLedger() {
-  const [loans, setLoans] = useState(SAMPLE);
+  const [loans, setLoans] = useState([]);
+  const [isDemo, setIsDemo] = useState(false);
   const [draft, setDraft] = useState({ id: '', sector: '', province: '', amount: '', risk: 'Low', status: 'Performing' });
   const [showForm, setShowForm] = useState(false);
-  const [uploadErrors, setUploadErrors] = useState([]);
+  const [rowErrors, setRowErrors] = useState([]);
+  const [loadErrors, setLoadErrors] = useState([]);
   const [uploadMsg, setUploadMsg] = useState('');
-  const fileInputRef = React.useRef(null);
+  const [fileName, setFileName] = useState('');
+  const [dragActive, setDragActive] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const stats = useMemo(function() {
+    const total = loans.reduce(function(s, l) { return s + l.amount; }, 0);
+    const nonPerforming = loans.filter(function(l) { return l.status === 'Non-performing'; });
+    const nonPerformingAmt = nonPerforming.reduce(function(s, l) { return s + l.amount; }, 0);
+
+    const byRisk = RISK_ORDER.map(function(risk) {
+      const tier = loans.filter(function(l) { return l.risk === risk; });
+      const watchlist = tier.filter(function(l) { return l.status === 'Watchlist'; }).length;
+      const nonPerf = tier.filter(function(l) { return l.status === 'Non-performing'; }).length;
+      const perf = tier.filter(function(l) { return l.status === 'Performing'; }).length;
+      const nonPerfAmt = tier.filter(function(l) { return l.status === 'Non-performing'; }).reduce(function(s, l) { return s + l.amount; }, 0);
+      return {
+        risk: risk, count: tier.length, watchlist: watchlist, nonPerf: nonPerf, perf: perf, nonPerfAmt: nonPerfAmt,
+        defaultRate: tier.length ? (nonPerf / tier.length) * 100 : 0,
+      };
+    });
+
+    const brokenRung = byRisk.slice().reverse().find(function(r) { return r.nonPerf > 0 && r.watchlist === 0; });
+    const portfolioNpl = total ? (nonPerformingAmt / total) * 100 : 0;
+
+    return { total: total, nonPerformingAmt: nonPerformingAmt, byRisk: byRisk, brokenRung: brokenRung, portfolioNpl: portfolioNpl, count: loans.length };
+  }, [loans]);
+
+  function ingest(text, name) {
+    const result = parseCSV(text);
+    setLoadErrors(result.errors && result.rows.length === 0 ? result.errors : []);
+    if (result.rows.length > 0) {
+      setLoans(result.rows);
+      setIsDemo(false);
+      setRowErrors(result.rowErrors || []);
+      setFileName(name);
+      setUploadMsg('Loaded ' + result.rows.length + ' facilit' + (result.rows.length === 1 ? 'y' : 'ies') + ' from "' + name + '".');
+    } else {
+      setUploadMsg('');
+    }
+  }
 
   function handleFile(e) {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (evt) => {
-      const { rows, errors } = parseCSV(evt.target.result);
-      setUploadErrors(errors);
-      if (rows.length > 0) {
-        setLoans(rows);
-        setUploadMsg(`Loaded ${rows.length} loan${rows.length === 1 ? '' : 's'} from "${file.name}".` + (errors.length ? ` ${errors.length} row(s) skipped.` : ''));
-      } else {
-        setUploadMsg('');
-      }
-    };
+    reader.onload = function(evt) { ingest(evt.target.result, file.name); };
+    reader.onerror = function() { setLoadErrors(['Could not read that file. Try re-saving it as CSV and uploading again.']); };
     reader.readAsText(file);
     e.target.value = '';
   }
 
-  function resetToSample() {
-    setLoans(SAMPLE);
-    setUploadErrors([]);
-    setUploadMsg('Reset to sample BoZ dataset.');
+  function handleDrop(e) {
+    e.preventDefault();
+    setDragActive(false);
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(evt) { ingest(evt.target.result, file.name); };
+    reader.readAsText(file);
   }
 
-  const stats = useMemo(() => {
-    const total = loans.reduce((s, l) => s + l.amount, 0);
-    const nonPerforming = loans.filter(l => l.status === 'Non-performing');
-    const nonPerformingAmt = nonPerforming.reduce((s, l) => s + l.amount, 0);
+  function handleDrag(e) {
+    e.preventDefault();
+    if (e.type === 'dragover') setDragActive(true);
+    if (e.type === 'dragleave' || e.type === 'drop') setDragActive(false);
+  }
 
-    const byRisk = RISK_ORDER.map(risk => {
-      const tier = loans.filter(l => l.risk === risk);
-      const watchlist = tier.filter(l => l.status === 'Watchlist').length;
-      const nonPerf = tier.filter(l => l.status === 'Non-performing').length;
-      const perf = tier.filter(l => l.status === 'Performing').length;
-      const nonPerfAmt = tier.filter(l => l.status === 'Non-performing').reduce((s, l) => s + l.amount, 0);
-      return {
-        risk, count: tier.length, watchlist, nonPerf, perf, nonPerfAmt,
-        defaultRate: tier.length ? (nonPerf / tier.length) * 100 : 0,
-      };
-    });
+  function loadDemo() {
+    setLoans(DEMO_DATA);
+    setIsDemo(true);
+    setLoadErrors([]);
+    setRowErrors([]);
+    setFileName('');
+    setUploadMsg('Demo dataset loaded — illustrative figures only.');
+  }
 
-    const brokenRung = [...byRisk].reverse().find(r => r.nonPerf > 0 && r.watchlist === 0);
-    const portfolioNpl = total ? (nonPerformingAmt / total) * 100 : 0;
-
-    return { total, nonPerformingAmt, byRisk, brokenRung, portfolioNpl, count: loans.length };
-  }, [loans]);
+  function clearAll() {
+    setLoans([]);
+    setIsDemo(false);
+    setLoadErrors([]);
+    setRowErrors([]);
+    setFileName('');
+    setUploadMsg('');
+  }
 
   function addLoan() {
     if (!draft.id || !draft.amount) return;
-    setLoans([...loans, { ...draft, amount: Number(draft.amount) }]);
+    setLoans(loans.concat([{ id: draft.id, sector: draft.sector || '—', province: draft.province || '—', amount: Number(draft.amount), risk: draft.risk, status: draft.status }]));
     setDraft({ id: '', sector: '', province: '', amount: '', risk: 'Low', status: 'Performing' });
     setShowForm(false);
+    if (isDemo) setIsDemo(false);
   }
 
   function removeLoan(id) {
-    setLoans(loans.filter(l => l.id !== id));
+    setLoans(loans.filter(function(l) { return l.id !== id; }));
   }
 
-  return (
-    <div style={{ minHeight: '100vh', background: '#0B0D10', color: '#F5F1E8', padding: '0 0 6rem' }}>
+  const hasData = loans.length > 0;
 
-      <header style={{ borderBottom: '1px solid #23262d', padding: '3.5rem 2rem 2.5rem', maxWidth: 880, margin: '0 auto' }}>
+  return (
+    <div
+      onDragOver={handleDrag} onDragLeave={handleDrag} onDrop={handleDrop}
+      style={{ minHeight: '100vh', background: '#0B0D10', color: '#F5F1E8', padding: '0 0 6rem' }}
+    >
+
+      <header style={{ borderBottom: '1px solid #23262d', padding: '3.5rem 2rem 2.5rem', maxWidth: 920, margin: '0 auto' }}>
         <div className="mono" style={{ fontSize: '0.7rem', letterSpacing: '0.25em', color: '#C9952A', marginBottom: '1rem', textTransform: 'uppercase' }}>
-          Clearview Business Solutions &nbsp;·&nbsp; Credit Exhibit No. 01
+          Clearview Business Solutions · Portfolio Risk Surveillance
         </div>
         <h1 className="serif" style={{ fontSize: 'clamp(1.8rem, 4.5vw, 2.8rem)', fontWeight: 500, lineHeight: 1.15, color: '#F5F1E8' }}>
-          Loan Portfolio<br /><span style={{ color: '#C9952A', fontStyle: 'italic' }}>Risk Ledger</span>
+          Loan Portfolio<br /><span style={{ color: '#C9952A', fontStyle: 'italic' }}>Risk Surveillance</span>
         </h1>
-        <p style={{ color: '#9a9690', fontSize: '0.95rem', marginTop: '1rem', maxWidth: 520, lineHeight: 1.6 }}>
-          Enter a loan book below. The ledger computes exposure, default concentration, and tests
-          whether your Watchlist is actually intercepting risk before it fails — live, as you edit.
+        <p style={{ color: '#9a9690', fontSize: '0.95rem', marginTop: '1rem', maxWidth: 560, lineHeight: 1.6 }}>
+          Upload any loan book. The instrument maps your columns automatically, computes exposure
+          and default concentration, and tests whether early-warning monitoring is intercepting
+          risk before it fails.
         </p>
 
-        <div style={{ display: 'flex', gap: '0.7rem', marginTop: '1.8rem', flexWrap: 'wrap', alignItems: 'center' }}>
-          <button
-            onClick={() => fileInputRef.current && fileInputRef.current.click()}
-            style={{ background: '#C9952A', border: 'none', color: '#0B0D10', padding: '0.6rem 1.1rem', fontSize: '0.78rem', fontWeight: 600, letterSpacing: '0.03em' }}
-          >
-            ↑ Upload CSV loan book
-          </button>
-          <input ref={fileInputRef} type="file" accept=".csv,text/csv" onChange={handleFile} style={{ display: 'none' }} />
-          <button onClick={downloadTemplate} style={{ background: 'transparent', border: '1px solid #2a2e36', color: '#9a9690', padding: '0.6rem 1.1rem', fontSize: '0.78rem' }}>
-            Download CSV template
-          </button>
-          <button onClick={resetToSample} style={{ background: 'transparent', border: 'none', color: '#6b6862', padding: '0.6rem 0.5rem', fontSize: '0.78rem', textDecoration: 'underline' }}>
-            Reset to sample data
-          </button>
-        </div>
+        {hasData && (
+          <div style={{ display: 'flex', gap: '0.7rem', marginTop: '1.8rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <button onClick={function() { fileInputRef.current && fileInputRef.current.click(); }}
+              style={{ background: '#C9952A', border: 'none', color: '#0B0D10', padding: '0.6rem 1.1rem', fontSize: '0.78rem', fontWeight: 600, letterSpacing: '0.03em' }}>
+              ↑ Upload new CSV
+            </button>
+            <button onClick={downloadTemplate} style={{ background: 'transparent', border: '1px solid #2a2e36', color: '#9a9690', padding: '0.6rem 1.1rem', fontSize: '0.78rem' }}>
+              See template
+            </button>
+            <button onClick={clearAll} style={{ background: 'transparent', border: 'none', color: '#6b6862', padding: '0.6rem 0.5rem', fontSize: '0.78rem', textDecoration: 'underline' }}>
+              Clear portfolio
+            </button>
+          </div>
+        )}
+        <input ref={fileInputRef} type="file" accept=".csv,text/csv" onChange={handleFile} style={{ display: 'none' }} />
 
-        {uploadMsg && (
-          <div className="mono" style={{ marginTop: '0.9rem', fontSize: '0.78rem', color: '#2F4F3F', background: 'rgba(47,79,63,0.15)', border: '1px solid #2F4F3F', padding: '0.6rem 0.9rem', maxWidth: 600 }}>
-            ✓ {uploadMsg}
+        {isDemo && (
+          <div className="mono" style={{ marginTop: '1rem', fontSize: '0.74rem', color: '#C9952A', background: 'rgba(201,149,42,0.08)', border: '1px solid #C9952A', padding: '0.55rem 0.9rem', maxWidth: 600, display: 'inline-block' }}>
+            ◆ Demo mode — illustrative sample data, not a real portfolio.
           </div>
         )}
 
-        {uploadErrors.length > 0 && (
-          <div style={{ marginTop: '0.9rem', fontSize: '0.78rem', color: '#C9952A', background: 'rgba(201,149,42,0.08)', border: '1px solid #7A1F2B', padding: '0.8rem 1rem', maxWidth: 600 }}>
-            <strong style={{ display: 'block', marginBottom: '0.4rem', color: '#F5F1E8' }}>
-              {uploadErrors.length} row{uploadErrors.length === 1 ? '' : 's'} could not be loaded:
-            </strong>
+        {uploadMsg && !isDemo && (
+          <div className="mono" style={{ marginTop: '1rem', fontSize: '0.78rem', color: '#2F4F3F', background: 'rgba(47,79,63,0.15)', border: '1px solid #2F4F3F', padding: '0.6rem 0.9rem', maxWidth: 600 }}>
+            ✓ {uploadMsg}{rowErrors.length > 0 ? ' ' + rowErrors.length + ' row(s) skipped.' : ''}
+          </div>
+        )}
+
+        {loadErrors.length > 0 && (
+          <div style={{ marginTop: '0.9rem', fontSize: '0.78rem', color: '#C9952A', background: 'rgba(201,149,42,0.08)', border: '1px solid #7A1F2B', padding: '0.8rem 1rem', maxWidth: 620 }}>
+            <strong style={{ display: 'block', marginBottom: '0.4rem', color: '#F5F1E8' }}>Could not read this file:</strong>
             <ul style={{ margin: 0, paddingLeft: '1.1rem', lineHeight: 1.6 }}>
-              {uploadErrors.slice(0, 6).map((err, i) => <li key={i} className="mono" style={{ fontSize: '0.74rem' }}>{err}</li>)}
-              {uploadErrors.length > 6 && <li className="mono" style={{ fontSize: '0.74rem' }}>…and {uploadErrors.length - 6} more.</li>}
+              {loadErrors.map(function(err, i) { return <li key={i} className="mono" style={{ fontSize: '0.74rem' }}>{err}</li>; })}
             </ul>
           </div>
         )}
+
+        {rowErrors.length > 0 && (
+          <details style={{ marginTop: '0.9rem', maxWidth: 620 }}>
+            <summary className="mono" style={{ fontSize: '0.74rem', color: '#9a9690', cursor: 'pointer' }}>
+              {rowErrors.length} row(s) skipped during import — view details
+            </summary>
+            <ul style={{ margin: '0.6rem 0 0', paddingLeft: '1.1rem', lineHeight: 1.6 }}>
+              {rowErrors.slice(0, 8).map(function(err, i) { return <li key={i} className="mono" style={{ fontSize: '0.72rem', color: '#9a9690' }}>{err}</li>; })}
+            </ul>
+          </details>
+        )}
       </header>
 
-      <main style={{ maxWidth: 880, margin: '0 auto', padding: '0 2rem' }}>
+      <main style={{ maxWidth: 920, margin: '0 auto', padding: '0 2rem' }}>
 
+        {!hasData && (
+          <EmptyState
+            onUploadClick={function() { fileInputRef.current && fileInputRef.current.click(); }}
+            onDemoClick={loadDemo}
+            dragActive={dragActive}
+          />
+        )}
+
+        {hasData && (
+        <React.Fragment>
         <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1px', background: '#23262d', border: '1px solid #23262d', marginTop: '2.5rem' }}>
-          {[
-            { label: 'Portfolio', value: kwacha(stats.total), sub: `${stats.count} facilities` },
-            { label: 'Non-performing', value: kwacha(stats.nonPerformingAmt), sub: `${stats.portfolioNpl.toFixed(1)}% of book`, accent: '#7A1F2B' },
-            { label: 'Riskiest tier', value: stats.brokenRung ? stats.brokenRung.risk : '—', sub: stats.brokenRung ? `${stats.brokenRung.defaultRate.toFixed(0)}% default rate` : 'no gap found', accent: '#C9952A' },
-          ].map((kpi, i) => (
-            <div key={i} style={{ background: '#0F1115', padding: '1.4rem 1.5rem' }}>
-              <div className="mono" style={{ fontSize: '0.65rem', letterSpacing: '0.15em', color: '#6b6862', textTransform: 'uppercase', marginBottom: '0.6rem' }}>{kpi.label}</div>
-              <div className="mono" style={{ fontSize: '1.5rem', fontWeight: 500, color: kpi.accent || '#F5F1E8' }}>{kpi.value}</div>
-              <div style={{ fontSize: '0.78rem', color: '#6b6862', marginTop: '0.3rem' }}>{kpi.sub}</div>
-            </div>
-          ))}
+          <StatCard label="Portfolio" value={kwacha(stats.total)} sub={stats.count + ' facilities'} />
+          <StatCard label="Non-performing" value={kwacha(stats.nonPerformingAmt)} sub={stats.portfolioNpl.toFixed(1) + '% of book'} accent="#7A1F2B" />
+          <StatCard label="Riskiest tier" value={stats.brokenRung ? stats.brokenRung.risk : '—'} sub={stats.brokenRung ? stats.brokenRung.defaultRate.toFixed(0) + '% default rate' : 'no gap found'} accent="#C9952A" />
         </section>
 
         <section style={{ marginTop: '3.5rem' }}>
           <div className="mono" style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#C9952A', textTransform: 'uppercase', marginBottom: '0.4rem' }}>Exhibit A</div>
           <h2 className="serif" style={{ fontSize: '1.4rem', fontWeight: 500, margin: '0 0 0.5rem' }}>The Interception Ladder</h2>
-          <p style={{ color: '#9a9690', fontSize: '0.88rem', maxWidth: 540, lineHeight: 1.6, marginBottom: '2rem' }}>
+          <p style={{ color: '#9a9690', fontSize: '0.88rem', maxWidth: 560, lineHeight: 1.6, marginBottom: '2rem' }}>
             Each rung is a risk tier. A loan should climb from Performing → Watchlist before it can fall to
             Non-performing. Where a rung is <span style={{ color: '#C9952A' }}>broken</span>, defaults are happening with no warning stage in between.
           </p>
 
           <div style={{ display: 'flex', flexDirection: 'column-reverse', gap: '0.5rem' }}>
-            {stats.byRisk.map((tier) => {
+            {stats.byRisk.map(function(tier) {
               const isBroken = tier.nonPerf > 0 && tier.watchlist === 0;
               return (
                 <div key={tier.risk} style={{
-                  border: `1px solid ${isBroken ? '#7A1F2B' : '#23262d'}`,
+                  border: '1px solid ' + (isBroken ? '#7A1F2B' : '#23262d'),
                   background: isBroken ? 'rgba(122,31,43,0.08)' : '#0F1115',
                   padding: '1.1rem 1.4rem', display: 'flex', alignItems: 'center', gap: '1.2rem', flexWrap: 'wrap',
                 }}>
@@ -306,7 +475,7 @@ function CreditRiskLedger() {
                       </React.Fragment>
                     )}
                   </div>
-                  <div style={{ minWidth: 140, textAlign: 'right' }}>
+                  <div style={{ minWidth: 160, textAlign: 'right' }}>
                     {isBroken ? (
                       <span className="mono" style={{ fontSize: '0.72rem', color: '#C9952A' }}>⚠ 0 intercepted, {tier.nonPerf} defaulted</span>
                     ) : (
@@ -331,24 +500,24 @@ function CreditRiskLedger() {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.6rem' }}>
             <div>
               <div className="mono" style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#C9952A', textTransform: 'uppercase', marginBottom: '0.4rem' }}>Exhibit B</div>
-              <h2 className="serif" style={{ fontSize: '1.4rem', fontWeight: 500 }}>Loan Book</h2>
+              <h2 className="serif" style={{ fontSize: '1.4rem', fontWeight: 500 }}>Loan Book{fileName ? (' — ' + fileName) : ''}</h2>
             </div>
-            <button onClick={() => setShowForm(!showForm)} style={{ background: 'transparent', border: '1px solid #C9952A', color: '#C9952A', padding: '0.5rem 1rem', fontSize: '0.78rem', letterSpacing: '0.05em' }}>
+            <button onClick={function() { setShowForm(!showForm); }} style={{ background: 'transparent', border: '1px solid #C9952A', color: '#C9952A', padding: '0.5rem 1rem', fontSize: '0.78rem', letterSpacing: '0.05em' }}>
               {showForm ? 'Cancel' : '+ Add facility'}
             </button>
           </div>
 
           {showForm && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '0.6rem', background: '#0F1115', border: '1px solid #23262d', padding: '1.2rem', marginBottom: '1.2rem' }}>
-              <input placeholder="Loan ID" value={draft.id} onChange={e => setDraft({ ...draft, id: e.target.value })} />
-              <input placeholder="Sector" value={draft.sector} onChange={e => setDraft({ ...draft, sector: e.target.value })} />
-              <input placeholder="Province" value={draft.province} onChange={e => setDraft({ ...draft, province: e.target.value })} />
-              <input placeholder="Amount (ZMW)" type="number" value={draft.amount} onChange={e => setDraft({ ...draft, amount: e.target.value })} />
-              <select value={draft.risk} onChange={e => setDraft({ ...draft, risk: e.target.value })}>
-                {RISK_ORDER.map(r => <option key={r} value={r}>{r} risk</option>)}
+              <input placeholder="Loan ID" value={draft.id} onChange={function(e) { setDraft(Object.assign({}, draft, { id: e.target.value })); }} />
+              <input placeholder="Sector" value={draft.sector} onChange={function(e) { setDraft(Object.assign({}, draft, { sector: e.target.value })); }} />
+              <input placeholder="Province" value={draft.province} onChange={function(e) { setDraft(Object.assign({}, draft, { province: e.target.value })); }} />
+              <input placeholder="Amount (ZMW)" type="number" value={draft.amount} onChange={function(e) { setDraft(Object.assign({}, draft, { amount: e.target.value })); }} />
+              <select value={draft.risk} onChange={function(e) { setDraft(Object.assign({}, draft, { risk: e.target.value })); }}>
+                {RISK_ORDER.map(function(r) { return <option key={r} value={r}>{r} risk</option>; })}
               </select>
-              <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })}>
-                {Object.keys(STATUS_COLOR).map(s => <option key={s} value={s}>{s}</option>)}
+              <select value={draft.status} onChange={function(e) { setDraft(Object.assign({}, draft, { status: e.target.value })); }}>
+                {STATUS_LIST.map(function(s) { return <option key={s} value={s}>{s}</option>; })}
               </select>
               <button onClick={addLoan} style={{ gridColumn: '1 / -1', background: '#C9952A', border: 'none', color: '#0B0D10', padding: '0.6rem', fontWeight: 600, fontSize: '0.82rem', letterSpacing: '0.03em' }}>
                 Add to ledger
@@ -370,7 +539,8 @@ function CreditRiskLedger() {
                 </tr>
               </thead>
               <tbody>
-                {loans.map(l => (
+                {loans.map(function(l) {
+                  return (
                   <tr key={l.id} className="rowhover" style={{ borderTop: '1px solid #1c1f25' }}>
                     <td className="mono" style={{ padding: '0.65rem 1rem', color: '#cfc9bd' }}>{l.id}</td>
                     <td style={{ padding: '0.65rem 1rem' }}>{l.sector}</td>
@@ -384,10 +554,11 @@ function CreditRiskLedger() {
                       </span>
                     </td>
                     <td style={{ padding: '0.65rem 1rem', textAlign: 'right' }}>
-                      <button onClick={() => removeLoan(l.id)} style={{ background: 'none', border: 'none', color: '#6b6862', fontSize: '0.75rem' }}>remove</button>
+                      <button onClick={function() { removeLoan(l.id); }} style={{ background: 'none', border: 'none', color: '#6b6862', fontSize: '0.75rem' }}>remove</button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -397,13 +568,15 @@ function CreditRiskLedger() {
           <div className="mono" style={{ fontSize: '0.7rem', letterSpacing: '0.2em', color: '#C9952A', textTransform: 'uppercase', marginBottom: '0.8rem' }}>Recommendation</div>
           <p className="serif" style={{ fontSize: '1.05rem', lineHeight: 1.7, color: '#F5F1E8', fontStyle: 'italic' }}>
             {stats.brokenRung
-              ? `Introduce a mandatory Watchlist review for any facility newly classified ${stats.brokenRung.risk}-risk, before it is permitted to lapse into Non-performing status. This single checkpoint targets the ${kwacha(stats.brokenRung.nonPerfAmt)} currently defaulting with no intermediate warning.`
+              ? ('Introduce a mandatory Watchlist review for any facility newly classified ' + stats.brokenRung.risk + '-risk, before it is permitted to lapse into Non-performing status. This single checkpoint targets the ' + kwacha(stats.brokenRung.nonPerfAmt) + ' currently defaulting with no intermediate warning.')
               : 'No interception gap detected in this portfolio — Watchlist appears to be functioning as an effective early-warning stage across all risk tiers.'}
           </p>
         </section>
+        </React.Fragment>
+        )}
 
         <footer style={{ marginTop: '3rem', textAlign: 'center', color: '#4a4742', fontSize: '0.72rem' }} className="mono">
-          Prepared with Clearview Business Solutions &nbsp;·&nbsp; Romance Chiingu
+          Prepared with Clearview Business Solutions · Romance Chiingu · Analytical demonstration tool
         </footer>
       </main>
     </div>
